@@ -41,6 +41,8 @@ export const scrapeRequestSchema = z.object({
   categoryId: z.string(),
   page: z.number().min(1).max(10).default(1),
   sortBy: z.enum(["orders", "price_asc", "price_desc", "rating"]).default("orders"),
+  minSales: z.number().min(0).optional(),
+  maxPages: z.number().min(1).max(10).default(1),
 });
 
 export type ScrapeRequest = z.infer<typeof scrapeRequestSchema>;

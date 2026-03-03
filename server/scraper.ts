@@ -239,6 +239,16 @@ async function fetchWithScraperApi(url: string, useRender: boolean, timeoutMs: n
   return await response.text();
 }
 
+export function parseSalesCount(orders: string | undefined): number {
+  if (!orders) return 0;
+  const cleaned = orders.replace(/[,\s]/g, "").toLowerCase();
+  const match = cleaned.match(/([\d.]+)\s*(\+)?\s*(k)?/i);
+  if (!match) return 0;
+  let num = parseFloat(match[1]);
+  if (match[3]) num *= 1000;
+  return Math.floor(num);
+}
+
 export async function scrapeAliexpress(
   categoryId: string,
   sortBy: string = "orders",
@@ -264,6 +274,72 @@ export async function scrapeAliexpress(
     products,
     category: categoryName,
     totalFound: products.length,
+    scrapedAt: new Date().toISOString(),
+  };
+}
+
+export async function scrapeMultiplePages(
+  categoryId: string,
+  sortBy: string = "orders",
+  startPage: number = 1,
+  maxPages: number = 5,
+  minSales: number = 0
+): Promise<ScrapeResponse> {
+  if (!SCRAPERAPI_KEY) {
+    throw new Error("SCRAPERAPI_KEY is not configured");
+  }
+
+  const category = aliexpressCategories.find(c => c.id === categoryId);
+  const categoryName = category?.name || "Unknown Category";
+  const allProducts: Product[] = [];
+  const seenIds = new Set<string>();
+
+  for (let page = startPage; page < startPage + maxPages; page++) {
+    const targetUrl = buildSearchUrl(categoryId, sortBy, page);
+    log(`Scraping page ${page}: ${targetUrl}`, "scraper");
+
+    try {
+      const html = await fetchWithScraperApi(targetUrl, true, 90000);
+      log(`Page ${page}: received ${html.length} bytes`, "scraper");
+
+      const products = extractProductsFromHtml(html);
+      log(`Page ${page}: found ${products.length} products`, "scraper");
+
+      if (products.length === 0) {
+        log(`Page ${page}: no products found, stopping`, "scraper");
+        break;
+      }
+
+      let qualifyingCount = 0;
+      for (const product of products) {
+        if (seenIds.has(product.id)) continue;
+        seenIds.add(product.id);
+
+        const salesCount = parseSalesCount(product.orders);
+        if (minSales > 0 && salesCount < minSales) continue;
+
+        qualifyingCount++;
+        allProducts.push(product);
+      }
+
+      log(`Page ${page}: ${qualifyingCount} products with ${minSales}+ sales`, "scraper");
+
+      if (minSales > 0 && qualifyingCount === 0) {
+        log(`No qualifying products on page ${page}, stopping`, "scraper");
+        break;
+      }
+    } catch (error: any) {
+      log(`Page ${page} failed: ${error.message}`, "scraper");
+      break;
+    }
+  }
+
+  log(`Total: ${allProducts.length} products with ${minSales}+ sales from ${categoryName}`, "scraper");
+
+  return {
+    products: allProducts,
+    category: categoryName,
+    totalFound: allProducts.length,
     scrapedAt: new Date().toISOString(),
   };
 }

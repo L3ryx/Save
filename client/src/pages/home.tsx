@@ -13,7 +13,7 @@ import {
   Baby, Refrigerator, Watch, Sparkles, Car, Gem, Wrench,
   ShoppingBag, Shirt, Search, TrendingUp, Star, Package,
   ExternalLink, Loader2, AlertCircle, ShoppingCart, ArrowUpDown,
-  ChevronLeft, ChevronRight, Zap, Globe
+  ChevronLeft, ChevronRight, Zap, Globe, Filter, Layers
 } from "lucide-react";
 
 const iconMap: Record<string, any> = {
@@ -103,7 +103,7 @@ function ProductCard({ product }: { product: Product }) {
           {product.orders && (
             <div className="flex items-center gap-1">
               <TrendingUp className="w-3 h-3 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">{product.orders} sold</span>
+              <span className="text-xs text-muted-foreground">{product.orders.toLowerCase().includes("sold") ? product.orders : `${product.orders} sold`}</span>
             </div>
           )}
         </div>
@@ -176,13 +176,15 @@ export default function HomePage() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<string>("orders");
   const [currentPage, setCurrentPage] = useState(1);
+  const [minSales, setMinSales] = useState<number>(1000);
+  const [maxPages, setMaxPages] = useState<number>(5);
   const [scrapeResult, setScrapeResult] = useState<ScrapeResponse | null>(null);
   const { toast } = useToast();
 
   const selectedCategoryData = aliexpressCategories.find(c => c.id === selectedCategory);
 
   const scrapeMutation = useMutation({
-    mutationFn: async (params: { categoryId: string; sortBy: string; page: number }) => {
+    mutationFn: async (params: { categoryId: string; sortBy: string; page: number; minSales?: number; maxPages?: number }) => {
       const response = await apiRequest("POST", "/api/scrape", params);
       return await response.json() as ScrapeResponse;
     },
@@ -214,27 +216,27 @@ export default function HomePage() {
     setSelectedCategory(categoryId);
     setCurrentPage(1);
     setScrapeResult(null);
-    scrapeMutation.mutate({ categoryId, sortBy, page: 1 });
+    scrapeMutation.mutate({ categoryId, sortBy, page: 1, minSales, maxPages });
   }
 
   function handleSortChange(value: string) {
     setSortBy(value);
     setCurrentPage(1);
     if (selectedCategory) {
-      scrapeMutation.mutate({ categoryId: selectedCategory, sortBy: value, page: 1 });
+      scrapeMutation.mutate({ categoryId: selectedCategory, sortBy: value, page: 1, minSales, maxPages });
     }
   }
 
   function handlePageChange(newPage: number) {
     setCurrentPage(newPage);
     if (selectedCategory) {
-      scrapeMutation.mutate({ categoryId: selectedCategory, sortBy, page: newPage });
+      scrapeMutation.mutate({ categoryId: selectedCategory, sortBy, page: newPage, minSales, maxPages });
     }
   }
 
   function handleRetry() {
     if (selectedCategory) {
-      scrapeMutation.mutate({ categoryId: selectedCategory, sortBy, page: currentPage });
+      scrapeMutation.mutate({ categoryId: selectedCategory, sortBy, page: currentPage, minSales, maxPages });
     }
   }
 
@@ -290,7 +292,7 @@ export default function HomePage() {
 
         {selectedCategory && (
           <section className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <ArrowUpDown className="w-4 h-4 text-muted-foreground" />
               <Select value={sortBy} onValueChange={handleSortChange}>
                 <SelectTrigger className="w-[200px]" data-testid="select-sort-trigger">
@@ -301,6 +303,32 @@ export default function HomePage() {
                   <SelectItem value="price_asc">Price: Low to High</SelectItem>
                   <SelectItem value="price_desc">Price: High to Low</SelectItem>
                   <SelectItem value="rating">Best Rating</SelectItem>
+                </SelectContent>
+              </Select>
+              <Filter className="w-4 h-4 text-muted-foreground ml-2" />
+              <Select value={String(minSales)} onValueChange={(v) => setMinSales(Number(v))}>
+                <SelectTrigger className="w-[160px]" data-testid="select-min-sales">
+                  <SelectValue placeholder="Min sales" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">All sales</SelectItem>
+                  <SelectItem value="100">100+ sold</SelectItem>
+                  <SelectItem value="500">500+ sold</SelectItem>
+                  <SelectItem value="1000">1,000+ sold</SelectItem>
+                  <SelectItem value="5000">5,000+ sold</SelectItem>
+                  <SelectItem value="10000">10,000+ sold</SelectItem>
+                </SelectContent>
+              </Select>
+              <Layers className="w-4 h-4 text-muted-foreground ml-2" />
+              <Select value={String(maxPages)} onValueChange={(v) => setMaxPages(Number(v))}>
+                <SelectTrigger className="w-[140px]" data-testid="select-max-pages">
+                  <SelectValue placeholder="Pages" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 page</SelectItem>
+                  <SelectItem value="3">3 pages</SelectItem>
+                  <SelectItem value="5">5 pages</SelectItem>
+                  <SelectItem value="10">10 pages</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -318,7 +346,7 @@ export default function HomePage() {
             <div className="flex items-center gap-3 mb-6">
               <Loader2 className="w-5 h-5 animate-spin text-primary" />
               <p className="text-sm text-muted-foreground">
-                Scraping AliExpress products... This may take 15-30 seconds.
+                Scraping AliExpress products ({maxPages} page{maxPages > 1 ? "s" : ""})... This may take {maxPages > 1 ? "1-3 minutes" : "15-30 seconds"}.
               </p>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -348,31 +376,33 @@ export default function HomePage() {
               ))}
             </div>
 
-            <div className="flex items-center justify-center gap-2 mt-8">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handlePageChange(currentPage - 1)}
-                disabled={currentPage <= 1}
-                data-testid="button-prev-page"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                Previous
-              </Button>
-              <Badge variant="secondary" className="px-4">
-                Page {currentPage}
-              </Badge>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handlePageChange(currentPage + 1)}
-                disabled={currentPage >= 10}
-                data-testid="button-next-page"
-              >
-                Next
-                <ChevronRight className="w-4 h-4" />
-              </Button>
-            </div>
+            {maxPages <= 1 && (
+              <div className="flex items-center justify-center gap-2 mt-8">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage <= 1}
+                  data-testid="button-prev-page"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  Previous
+                </Button>
+                <Badge variant="secondary" className="px-4">
+                  Page {currentPage}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage >= 10}
+                  data-testid="button-next-page"
+                >
+                  Next
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            )}
           </section>
         )}
 
