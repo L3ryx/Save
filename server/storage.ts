@@ -1,37 +1,37 @@
-import { type User, type InsertUser } from "@shared/schema";
-import { randomUUID } from "crypto";
-
-// modify the interface with any CRUD methods
-// you might need
+import { type Product, type ScrapeResponse } from "@shared/schema";
 
 export interface IStorage {
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  cacheProducts(categoryId: string, sortBy: string, page: number, response: ScrapeResponse): Promise<void>;
+  getCachedProducts(categoryId: string, sortBy: string, page: number): Promise<ScrapeResponse | undefined>;
 }
 
 export class MemStorage implements IStorage {
-  private users: Map<string, User>;
+  private cache: Map<string, { data: ScrapeResponse; timestamp: number }>;
+  private cacheTTL = 10 * 60 * 1000;
 
   constructor() {
-    this.users = new Map();
+    this.cache = new Map();
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  private getCacheKey(categoryId: string, sortBy: string, page: number): string {
+    return `${categoryId}_${sortBy}_${page}`;
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+  async cacheProducts(categoryId: string, sortBy: string, page: number, response: ScrapeResponse): Promise<void> {
+    const key = this.getCacheKey(categoryId, sortBy, page);
+    this.cache.set(key, { data: response, timestamp: Date.now() });
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+  async getCachedProducts(categoryId: string, sortBy: string, page: number): Promise<ScrapeResponse | undefined> {
+    const key = this.getCacheKey(categoryId, sortBy, page);
+    const cached = this.cache.get(key);
+    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
+      return cached.data;
+    }
+    if (cached) {
+      this.cache.delete(key);
+    }
+    return undefined;
   }
 }
 
