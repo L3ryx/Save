@@ -56,7 +56,7 @@ function extractProductsFromHtml(html: string): Product[] {
     if (seen.has(id)) continue;
     seen.add(id);
 
-    const block = blockMatch[2].substring(0, 3000);
+    const block = blockMatch[2].substring(0, 8000);
 
     let title = "";
     const titleMatch = block.match(/"displayTitle"\s*:\s*"([^"]+)"/);
