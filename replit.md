@@ -32,6 +32,7 @@ A web application that scrapes products on AliExpress by category and Etsy by ke
 ## Environment Variables
 - `SCRAPERAPI_KEY` - ScraperAPI key for AliExpress scraping (required)
 - `SCRAPINGBEE_API_KEY` - ScrapingBee key for Etsy scraping + AI analysis (required)
+- `ZENSERP_API_KEY` - Zenserp key for image search matching (optional, boosts match quality)
 
 ## API Endpoints
 - `GET /api/categories` - Returns list of AliExpress categories

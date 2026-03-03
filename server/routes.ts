@@ -3,8 +3,9 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scrapeAliexpress, scrapeMultiplePages, searchAliexpressByKeyword } from "./scraper";
 import { scrapeEtsy, extractSearchKeywords, scoreMatch, scrapeEtsyTrendingKeywords } from "./etsy-scraper";
+import { searchImagesByQuery, findAliexpressFromImageResults } from "./zenserp";
 import { scrapeRequestSchema, etsySearchRequestSchema, aliexpressCategories } from "@shared/schema";
-import type { MatchedProduct } from "@shared/schema";
+import type { MatchedProduct, Product } from "@shared/schema";
 import { log } from "./index";
 
 export async function registerRoutes(
@@ -103,6 +104,36 @@ export async function registerRoutes(
         });
       }
 
+      const hasZenserp = !!process.env.ZENSERP_API_KEY;
+      const limitedForVisual = etsyProducts.slice(0, 6);
+
+      let visualMatchesMap = new Map<string, Product[]>();
+      if (hasZenserp) {
+        log(`Running Zenserp visual search for ${limitedForVisual.length} products`, "routes");
+        await Promise.all(
+          limitedForVisual.map(async (ep) => {
+            try {
+              const imageResults = await searchImagesByQuery(ep.title + " aliexpress", 20);
+              const aliHits = findAliexpressFromImageResults(imageResults);
+              if (aliHits.length > 0) {
+                const visualProducts: Product[] = aliHits.map((hit, idx) => ({
+                  id: `visual-${ep.id}-${idx}`,
+                  title: hit.title,
+                  price: "",
+                  imageUrl: hit.thumbnail || "",
+                  productUrl: hit.link,
+                  store: hit.source,
+                }));
+                visualMatchesMap.set(ep.id, visualProducts);
+                log(`Zenserp found ${aliHits.length} AliExpress hits for "${ep.title.substring(0, 30)}"`, "routes");
+              }
+            } catch (err: any) {
+              log(`Zenserp error for "${ep.title.substring(0, 30)}": ${err.message}`, "routes");
+            }
+          })
+        );
+      }
+
       const matches: MatchedProduct[] = etsyProducts.map((etsyProduct) => {
         const scored = aliProducts.map(ali => ({
           product: ali,
@@ -110,13 +141,24 @@ export async function registerRoutes(
         }));
 
         scored.sort((a, b) => b.score - a.score);
-        const topMatches = scored.slice(0, 5).map(s => s.product);
+        let topMatches = scored.slice(0, 5).map(s => s.product);
+
+        const visualHits = visualMatchesMap.get(etsyProduct.id) || [];
+        if (visualHits.length > 0) {
+          const existingIds = new Set(topMatches.map(m => m.productUrl));
+          const newVisual = visualHits.filter(v => !existingIds.has(v.productUrl));
+          topMatches = [...newVisual.slice(0, 3), ...topMatches].slice(0, 8);
+        }
+
+        const hasVisual = visualHits.length > 0;
+        const baseScore = scored[0]?.score || 0;
+        const finalScore = hasVisual ? Math.min(baseScore + 0.3, 1.0) : baseScore;
 
         return {
           etsyProduct,
           aliexpressMatches: topMatches,
           searchKeywords: searchTerms,
-          matchScore: scored[0]?.score || 0,
+          matchScore: finalScore,
         };
       });
 
@@ -208,8 +250,32 @@ export async function registerRoutes(
 
           let keywordNewMatches = 0;
 
+          const hasZenserp = !!process.env.ZENSERP_API_KEY;
+          const visualMap = new Map<string, Product[]>();
+          if (hasZenserp) {
+            const topEtsy = etsyProducts.slice(0, 4);
+            await Promise.all(
+              topEtsy.map(async (ep) => {
+                try {
+                  const imgResults = await searchImagesByQuery(ep.title + " aliexpress", 15);
+                  const aliHits = findAliexpressFromImageResults(imgResults);
+                  if (aliHits.length > 0) {
+                    visualMap.set(ep.id, aliHits.map((hit, idx) => ({
+                      id: `visual-${ep.id}-${idx}`,
+                      title: hit.title,
+                      price: "",
+                      imageUrl: hit.thumbnail || "",
+                      productUrl: hit.link,
+                      store: hit.source,
+                    })));
+                  }
+                } catch {}
+              })
+            );
+          }
+
           for (const etsyProduct of etsyProducts) {
-            if (goodMatches.length >= targetMatches) break;
+            if (goodMatches.length >= targetMatches || clientDisconnected) break;
             if (seenEtsyIds.has(etsyProduct.id)) continue;
 
             const scored = aliProducts.map(ali => ({
@@ -218,15 +284,24 @@ export async function registerRoutes(
             }));
 
             scored.sort((a, b) => b.score - a.score);
-            const bestScore = scored[0]?.score || 0;
+            const baseScore = scored[0]?.score || 0;
+            const visualHits = visualMap.get(etsyProduct.id) || [];
+            const hasVisual = visualHits.length > 0;
+            const finalScore = hasVisual ? Math.min(baseScore + 0.3, 1.0) : baseScore;
 
-            if (bestScore >= minScore) {
-              const topMatches = scored.slice(0, 5).map(s => s.product);
+            if (finalScore >= minScore) {
+              let topMatches = scored.slice(0, 5).map(s => s.product);
+              if (visualHits.length > 0) {
+                const existingUrls = new Set(topMatches.map(m => m.productUrl));
+                const newVisual = visualHits.filter(v => !existingUrls.has(v.productUrl));
+                topMatches = [...newVisual.slice(0, 3), ...topMatches].slice(0, 8);
+              }
+
               const match: MatchedProduct = {
                 etsyProduct,
                 aliexpressMatches: topMatches,
                 searchKeywords: keyword,
-                matchScore: bestScore,
+                matchScore: finalScore,
               };
 
               goodMatches.push(match);

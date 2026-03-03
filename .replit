@@ -44,3 +44,4 @@ waitForPort = 5000
 
 [userenv.shared]
 RAPIDAPI_KEY = "ak_ggcd89twlbju5r5jwgczrns0827c9458dcctblmeczyv7iw"
+ZENSERP_API_KEY = "316eaff0-16f3-11f1-8643-139fcef9c25a"

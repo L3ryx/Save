@@ -12,5 +12,7 @@ services:
         sync: false
       - key: SCRAPINGBEE_API_KEY
         sync: false
+      - key: ZENSERP_API_KEY
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
