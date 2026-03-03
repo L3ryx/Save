@@ -9,8 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Search, Star, TrendingUp, Package, ExternalLink, Loader2,
-  AlertCircle, ShoppingCart, ArrowRight, Store, Eye,
+  Search, TrendingUp, Package, ExternalLink, Loader2,
+  AlertCircle, ShoppingCart, Store,
   ChevronDown, ChevronUp
 } from "lucide-react";
 import { Link } from "wouter";
@@ -67,7 +67,7 @@ function MatchCard({ match }: { match: MatchedProduct }) {
     <Card className="overflow-hidden border-card-border" data-testid={`match-card-${match.etsyProduct.id}`}>
       <div className="flex flex-col md:flex-row">
         <div className="md:w-1/3 p-4 border-b md:border-b-0 md:border-r">
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
             <Badge variant="outline" className="text-xs gap-1">
               <Store className="w-3 h-3" />
               Etsy
@@ -75,6 +75,22 @@ function MatchCard({ match }: { match: MatchedProduct }) {
             {hasMatches && (
               <Badge variant="default" className="text-xs gap-1 bg-green-600">
                 {match.aliexpressMatches.length} match{match.aliexpressMatches.length > 1 ? "es" : ""}
+              </Badge>
+            )}
+            {match.matchScore !== undefined && match.matchScore > 0 && (
+              <Badge
+                variant="secondary"
+                className={`text-xs gap-1 ${
+                  match.matchScore >= 0.5
+                    ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                    : match.matchScore >= 0.25
+                    ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                }`}
+                data-testid={`match-score-${match.etsyProduct.id}`}
+              >
+                <TrendingUp className="w-3 h-3" />
+                {Math.round(match.matchScore * 100)}% match
               </Badge>
             )}
           </div>
@@ -112,8 +128,8 @@ function MatchCard({ match }: { match: MatchedProduct }) {
           )}
 
           <Badge variant="secondary" className="text-xs mb-3">
-            <Eye className="w-3 h-3 mr-1" />
-            AI: "{match.searchKeywords}"
+            <Search className="w-3 h-3 mr-1" />
+            Keywords: "{match.searchKeywords}"
           </Badge>
 
           <a
@@ -215,8 +231,8 @@ export default function EtsyPage() {
       } else {
         const totalMatches = data.matches.reduce((sum, m) => sum + m.aliexpressMatches.length, 0);
         toast({
-          title: `${data.matches.length} Etsy products analyzed`,
-          description: `Found ${totalMatches} AliExpress matches via AI image analysis`,
+          title: `${data.matches.length} Etsy products found`,
+          description: `Matched against ${data.totalAliProducts || 0} AliExpress products`,
         });
       }
     },
@@ -298,7 +314,7 @@ export default function EtsyPage() {
             <div className="flex items-center gap-3 justify-center">
               <Loader2 className="w-5 h-5 animate-spin text-primary" />
               <p className="text-sm text-muted-foreground">
-                Scraping Etsy and analyzing products with AI... This can take 2-5 minutes.
+                Scraping Etsy & AliExpress in parallel... This usually takes 30-60 seconds.
               </p>
             </div>
             {Array.from({ length: 3 }).map((_, i) => (
@@ -333,7 +349,7 @@ export default function EtsyPage() {
             </div>
             <h3 className="text-lg font-semibold">Search Etsy products</h3>
             <p className="text-sm text-muted-foreground text-center max-w-md">
-              Enter a keyword to find Etsy products, then AI will analyze each listing's image and title to find matching products on AliExpress.
+              Enter a keyword to search Etsy and AliExpress simultaneously. Products are matched by title keywords and price ratio analysis.
             </p>
             <div className="flex gap-2 flex-wrap justify-center mt-2">
               {["minimalist necklace", "phone case aesthetic", "led strip lights", "tote bag canvas"].map(term => (

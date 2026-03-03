@@ -68,7 +68,7 @@ async function fetchWithScrapingBeeRaw(url: string): Promise<string> {
 function extractEtsyProductsFallback(html: string): EtsyProduct[] {
   const products: EtsyProduct[] = [];
   const seen = new Set<string>();
-  let m;
+  let m: RegExpExecArray | null;
 
   const listingIds: string[] = [];
   const listingRegex = /data-listing-id="(\d+)"/g;
@@ -129,7 +129,7 @@ function extractEtsyProductsFallback(html: string): EtsyProduct[] {
   return products;
 }
 
-export async function scrapeEtsy(keyword: string, maxResults: number = 12): Promise<EtsyProduct[]> {
+export async function scrapeEtsy(keyword: string, maxResults: number = 24): Promise<EtsyProduct[]> {
   const encodedKeyword = encodeURIComponent(keyword);
   const url = `https://www.etsy.com/search?q=${encodedKeyword}&ref=search_bar`;
 
@@ -209,45 +209,6 @@ export async function scrapeEtsy(keyword: string, maxResults: number = 12): Prom
   return fallbackProducts.slice(0, maxResults);
 }
 
-export async function analyzeEtsyProductForAliexpress(etsyProduct: EtsyProduct): Promise<string> {
-  const pageUrl = etsyProduct.productUrl;
-
-  try {
-    const extractRules = {
-      product_analysis: {
-        description: "Analysis of this product to find it on AliExpress/wholesale suppliers",
-        type: "object",
-        output: {
-          product_type: "The generic product type/category (e.g. 'wireless earbuds', 'phone case', 'led strip lights')",
-          material: "The main material of the product if visible",
-          key_features: "The most distinctive visual features that would help identify this exact product on AliExpress (colors, shape, patterns, style)",
-          search_terms: "The best 3-5 word search query to find this exact product on AliExpress in English",
-        },
-      },
-    };
-
-    const data = await fetchWithScrapingBeeAI(
-      pageUrl,
-      `Analyze this Etsy product listing. Look at the product images and title carefully. Determine what generic type of product this is (ignoring branding/personalization). Generate the best search terms to find this same product on AliExpress or from Chinese wholesale suppliers. The product title is: "${etsyProduct.title}"`,
-      extractRules
-    );
-
-    log(`Product analysis for "${etsyProduct.title.substring(0, 40)}": ${JSON.stringify(data?.product_analysis)}`, "etsy");
-
-    const analysis = data?.product_analysis;
-    if (analysis?.search_terms) {
-      return analysis.search_terms;
-    }
-    if (analysis?.product_type) {
-      return analysis.product_type;
-    }
-  } catch (error: any) {
-    log(`Product analysis failed for "${etsyProduct.title.substring(0, 40)}": ${error.message}`, "etsy");
-  }
-
-  return extractSearchKeywords(etsyProduct.title);
-}
-
 export function extractSearchKeywords(title: string): string {
   const stopWords = new Set([
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -270,4 +231,45 @@ export function extractSearchKeywords(title: string): string {
     .filter(w => w.length > 2 && !stopWords.has(w));
 
   return words.slice(0, 5).join(" ") || title.substring(0, 40);
+}
+
+function parsePrice(priceStr: string): number {
+  const match = priceStr.replace(/[,\s]/g, "").match(/(\d+\.?\d*)/);
+  return match ? parseFloat(match[1]) : 0;
+}
+
+export function scoreMatch(etsyTitle: string, etsyPrice: string, aliTitle: string, aliPrice: string): number {
+  const etsyWords = etsyTitle
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 2);
+
+  const aliWords = aliTitle
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 2);
+
+  let wordMatches = 0;
+  for (const word of etsyWords) {
+    if (aliWords.some(aw => aw.includes(word) || word.includes(aw))) {
+      wordMatches++;
+    }
+  }
+  const titleScore = etsyWords.length > 0 ? wordMatches / etsyWords.length : 0;
+
+  const etsyP = parsePrice(etsyPrice);
+  const aliP = parsePrice(aliPrice);
+  let priceScore = 0;
+  if (etsyP > 0 && aliP > 0) {
+    const ratio = etsyP / aliP;
+    if (ratio >= 2 && ratio <= 20) {
+      priceScore = 0.3;
+    } else if (ratio >= 1.5 && ratio <= 30) {
+      priceScore = 0.15;
+    }
+  }
+
+  return Math.min(titleScore + priceScore, 1.0);
 }

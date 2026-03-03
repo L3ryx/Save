@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scrapeAliexpress, scrapeMultiplePages, searchAliexpressByKeyword } from "./scraper";
-import { scrapeEtsy, analyzeEtsyProductForAliexpress, extractSearchKeywords } from "./etsy-scraper";
+import { scrapeEtsy, extractSearchKeywords, scoreMatch } from "./etsy-scraper";
 import { scrapeRequestSchema, etsySearchRequestSchema, aliexpressCategories } from "@shared/schema";
 import type { MatchedProduct } from "@shared/schema";
 import { log } from "./index";
@@ -84,8 +84,15 @@ export async function registerRoutes(
       const { keyword, maxResults } = parsed.data;
       log(`Etsy search: "${keyword}" (max ${maxResults})`, "routes");
 
-      const etsyProducts = await scrapeEtsy(keyword, maxResults);
-      log(`Found ${etsyProducts.length} Etsy products`, "routes");
+      const searchTerms = extractSearchKeywords(keyword);
+      log(`Extracted search terms: "${searchTerms}"`, "routes");
+
+      const [etsyProducts, aliProducts] = await Promise.all([
+        scrapeEtsy(keyword, maxResults),
+        searchAliexpressByKeyword(searchTerms, 60),
+      ]);
+
+      log(`Found ${etsyProducts.length} Etsy products and ${aliProducts.length} AliExpress products`, "routes");
 
       if (etsyProducts.length === 0) {
         return res.json({
@@ -96,66 +103,30 @@ export async function registerRoutes(
         });
       }
 
-      const limitedProducts = etsyProducts.slice(0, 8);
-
-      log(`Analyzing ${limitedProducts.length} products in parallel`, "routes");
-      const analysisResults = await Promise.all(
-        limitedProducts.map(async (etsyProduct) => {
-          let searchTerms: string;
-          try {
-            searchTerms = await analyzeEtsyProductForAliexpress(etsyProduct);
-          } catch {
-            searchTerms = extractSearchKeywords(etsyProduct.title);
-          }
-          log(`AI terms for "${etsyProduct.title.substring(0, 30)}": "${searchTerms}"`, "routes");
-          return { etsyProduct, searchTerms };
-        })
-      );
-
-      const uniqueSearchTerms = Array.from(new Set(analysisResults.map(r => r.searchTerms)));
-      log(`${uniqueSearchTerms.length} unique search terms, fetching AliExpress in parallel`, "routes");
-
-      const aliResultsMap = new Map<string, import("@shared/schema").Product[]>();
-      await Promise.all(
-        uniqueSearchTerms.map(async (terms) => {
-          const aliProducts = await searchAliexpressByKeyword(terms, 20);
-          aliResultsMap.set(terms, aliProducts);
-          log(`AliExpress: ${aliProducts.length} products for "${terms}"`, "routes");
-        })
-      );
-
-      const matches: MatchedProduct[] = analysisResults.map(({ etsyProduct, searchTerms }) => {
-        const aliProducts = aliResultsMap.get(searchTerms) || [];
-
-        const etsyWords = etsyProduct.title
-          .toLowerCase()
-          .replace(/[^a-z0-9\s]/g, " ")
-          .split(/\s+/)
-          .filter(w => w.length > 2);
-
-        const scored = aliProducts.map(ali => {
-          const aliWords = ali.title
-            .toLowerCase()
-            .replace(/[^a-z0-9\s]/g, " ")
-            .split(/\s+/)
-            .filter(w => w.length > 2);
-          let matchCount = 0;
-          for (const word of etsyWords) {
-            if (aliWords.some(aw => aw.includes(word) || word.includes(aw))) matchCount++;
-          }
-          return { product: ali, score: etsyWords.length > 0 ? matchCount / etsyWords.length : 0 };
-        });
+      const matches: MatchedProduct[] = etsyProducts.map((etsyProduct) => {
+        const scored = aliProducts.map(ali => ({
+          product: ali,
+          score: scoreMatch(etsyProduct.title, etsyProduct.price, ali.title, ali.price),
+        }));
 
         scored.sort((a, b) => b.score - a.score);
         const topMatches = scored.slice(0, 5).map(s => s.product);
 
-        return { etsyProduct, aliexpressMatches: topMatches, searchKeywords: searchTerms };
+        return {
+          etsyProduct,
+          aliexpressMatches: topMatches,
+          searchKeywords: searchTerms,
+          matchScore: scored[0]?.score || 0,
+        };
       });
+
+      matches.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
       return res.json({
         matches,
         keyword,
         totalEtsyProducts: etsyProducts.length,
+        totalAliProducts: aliProducts.length,
         scrapedAt: new Date().toISOString(),
       });
     } catch (error: any) {

@@ -73,6 +73,7 @@ export const matchedProductSchema = z.object({
   etsyProduct: etsyProductSchema,
   aliexpressMatches: z.array(productSchema),
   searchKeywords: z.string(),
+  matchScore: z.number().optional(),
 });
 
 export type MatchedProduct = z.infer<typeof matchedProductSchema>;
@@ -88,6 +89,7 @@ export const etsySearchResponseSchema = z.object({
   matches: z.array(matchedProductSchema),
   keyword: z.string(),
   totalEtsyProducts: z.number(),
+  totalAliProducts: z.number().optional(),
   scrapedAt: z.string(),
 });
 
