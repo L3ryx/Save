@@ -213,8 +213,6 @@ async function fetchWithScraperApi(url: string, useRender: boolean, timeoutMs: n
     url,
     country_code: "us",
     device_type: "desktop",
-    premium: "true",
-    ultra_premium: "true",
   });
   if (useRender) {
     params.set("render", "true");
