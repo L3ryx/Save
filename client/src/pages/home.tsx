@@ -8,12 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
 import {
   Smartphone, Monitor, Headphones, Gamepad2, Home, Dumbbell,
   Baby, Refrigerator, Watch, Sparkles, Car, Gem, Wrench,
   ShoppingBag, Shirt, Search, TrendingUp, Star, Package,
   ExternalLink, Loader2, AlertCircle, ShoppingCart, ArrowUpDown,
-  ChevronLeft, ChevronRight, Zap, Globe, Filter, Layers
+  ChevronLeft, ChevronRight, Zap, Globe, Filter, Layers, Store
 } from "lucide-react";
 
 const iconMap: Record<string, any> = {
@@ -255,13 +256,15 @@ export default function HomePage() {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              <Link href="/etsy">
+                <Button variant="outline" size="sm" className="gap-2" data-testid="link-etsy">
+                  <Store className="w-4 h-4" />
+                  Etsy Finder
+                </Button>
+              </Link>
               <Badge variant="secondary" className="gap-1">
                 <Zap className="w-3 h-3" />
                 ScraperAPI
-              </Badge>
-              <Badge variant="outline" className="gap-1">
-                <Globe className="w-3 h-3" />
-                Live
               </Badge>
             </div>
           </div>

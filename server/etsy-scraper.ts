@@ -3,13 +3,75 @@ import { log } from "./index";
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
-function extractEtsyProducts(html: string): EtsyProduct[] {
+async function fetchWithScrapingBeeAI(url: string, aiQuery: string, extractRules: object): Promise<any> {
+  if (!SCRAPINGBEE_API_KEY) {
+    throw new Error("SCRAPINGBEE_API_KEY is not configured");
+  }
+
+  const params = new URLSearchParams({
+    api_key: SCRAPINGBEE_API_KEY,
+    url,
+    render_js: "true",
+    premium_proxy: "true",
+    country_code: "us",
+    ai_query: aiQuery,
+    ai_extract_rules: JSON.stringify(extractRules),
+  });
+
+  const apiUrl = `https://app.scrapingbee.com/api/v1?${params.toString()}`;
+  log(`ScrapingBee AI request: ${url}`, "etsy");
+
+  const response = await fetch(apiUrl, {
+    method: "GET",
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`ScrapingBee returned ${response.status}: ${text.substring(0, 300)}`);
+  }
+
+  const data = await response.json();
+  log(`ScrapingBee AI returned data`, "etsy");
+  return data;
+}
+
+async function fetchWithScrapingBeeRaw(url: string): Promise<string> {
+  if (!SCRAPINGBEE_API_KEY) {
+    throw new Error("SCRAPINGBEE_API_KEY is not configured");
+  }
+
+  const params = new URLSearchParams({
+    api_key: SCRAPINGBEE_API_KEY,
+    url,
+    render_js: "true",
+    premium_proxy: "true",
+    country_code: "us",
+  });
+
+  const apiUrl = `https://app.scrapingbee.com/api/v1?${params.toString()}`;
+  log(`ScrapingBee raw request: ${url}`, "etsy");
+
+  const response = await fetch(apiUrl, {
+    method: "GET",
+    signal: AbortSignal.timeout(90000),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`ScrapingBee returned ${response.status}: ${text.substring(0, 300)}`);
+  }
+
+  return await response.text();
+}
+
+function extractEtsyProductsFallback(html: string): EtsyProduct[] {
   const products: EtsyProduct[] = [];
   const seen = new Set<string>();
-
-  const listingRegex = /data-listing-id="(\d+)"/g;
-  const listingIds: string[] = [];
   let m;
+
+  const listingIds: string[] = [];
+  const listingRegex = /data-listing-id="(\d+)"/g;
   while ((m = listingRegex.exec(html)) !== null) {
     if (!seen.has(m[1])) {
       seen.add(m[1]);
@@ -27,51 +89,12 @@ function extractEtsyProducts(html: string): EtsyProduct[] {
     }
   }
 
-  log(`Found ${listingIds.length} listing IDs on Etsy`, "etsy");
-
-  const titleRegex = /data-listing-id="(\d+)"[\s\S]*?<h3[^>]*>([^<]+)<\/h3>/g;
   const titleMap = new Map<string, string>();
-  while ((m = titleRegex.exec(html)) !== null) {
-    titleMap.set(m[1], m[2].trim());
-  }
-
-  if (titleMap.size === 0) {
-    const altTitleRegex = /listing\/(\d+)\/([^?"]+)/g;
-    while ((m = altTitleRegex.exec(html)) !== null) {
-      if (!titleMap.has(m[1])) {
-        const title = decodeURIComponent(m[2]).replace(/-/g, " ").replace(/\s+/g, " ").trim();
-        if (title.length > 3) {
-          titleMap.set(m[1], title);
-        }
-      }
-    }
-  }
-
-  const priceRegex = /data-listing-id="(\d+)"[\s\S]*?(?:currency-value|sale-price)[^>]*>([^<]*\d+[\.,]\d{2})/g;
-  const priceMap = new Map<string, string>();
-  while ((m = priceRegex.exec(html)) !== null) {
-    if (!priceMap.has(m[1])) {
-      priceMap.set(m[1], m[2].trim());
-    }
-  }
-
-  const globalPrices: string[] = [];
-  const priceExtract = /class="[^"]*currency-value[^"]*"[^>]*>(\d+[\.,]\d{2})/g;
-  while ((m = priceExtract.exec(html)) !== null) {
-    globalPrices.push(m[1]);
-  }
-  if (globalPrices.length === 0) {
-    const altPriceExtract = /(\d+[\.,]\d{2})\s*(?:USD|EUR|GBP|\$|€|£)/g;
-    while ((m = altPriceExtract.exec(html)) !== null) {
-      globalPrices.push(m[1]);
-    }
-  }
-
-  const imgRegex = /data-listing-id="(\d+)"[\s\S]*?<img[^>]*src="(https:\/\/i\.etsystatic\.com\/[^"]+)"/g;
-  const imgMap = new Map<string, string>();
-  while ((m = imgRegex.exec(html)) !== null) {
-    if (!imgMap.has(m[1])) {
-      imgMap.set(m[1], m[2]);
+  const altTitleRegex = /listing\/(\d+)\/([^?"]+)/g;
+  while ((m = altTitleRegex.exec(html)) !== null) {
+    if (!titleMap.has(m[1])) {
+      const title = decodeURIComponent(m[2]).replace(/-/g, " ").replace(/\s+/g, " ").trim();
+      if (title.length > 3) titleMap.set(m[1], title);
     }
   }
 
@@ -83,92 +106,146 @@ function extractEtsyProducts(html: string): EtsyProduct[] {
     }
   }
 
-  const shopRegex = /data-listing-id="(\d+)"[\s\S]*?<p[^>]*shop-name[^>]*>([^<]+)<\/p>/g;
-  const shopMap = new Map<string, string>();
-  while ((m = shopRegex.exec(html)) !== null) {
-    shopMap.set(m[1], m[2].trim());
+  const globalPrices: string[] = [];
+  const priceExtract = /class="[^"]*currency-value[^"]*"[^>]*>(\d+[\.,]\d{2})/g;
+  while ((m = priceExtract.exec(html)) !== null) {
+    globalPrices.push(m[1]);
   }
 
   for (let i = 0; i < listingIds.length; i++) {
     const id = listingIds[i];
     const title = titleMap.get(id) || "";
-    const price = priceMap.get(id) || globalPrices[i] || "";
-    const imageUrl = imgMap.get(id) || globalImgs[i] || "";
-    const shop = shopMap.get(id);
-
     if (!title || title.length < 3) continue;
 
     products.push({
       id,
       title,
-      price: price ? `$${price.replace(/[^0-9.,]/g, "")}` : "Price unavailable",
-      imageUrl,
+      price: globalPrices[i] ? `$${globalPrices[i]}` : "Price unavailable",
+      imageUrl: globalImgs[i] || "",
       productUrl: `https://www.etsy.com/listing/${id}`,
-      shop,
     });
-  }
-
-  if (products.length === 0) {
-    log("Primary extraction failed, trying JSON-LD extraction", "etsy");
-    const jsonLdRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g;
-    while ((m = jsonLdRegex.exec(html)) !== null) {
-      try {
-        const data = JSON.parse(m[1]);
-        if (data["@type"] === "Product" || (Array.isArray(data) && data[0]?.["@type"] === "Product")) {
-          const items = Array.isArray(data) ? data : [data];
-          for (const item of items) {
-            if (item.name && item.url) {
-              const idMatch = item.url.match(/listing\/(\d+)/);
-              const pid = idMatch ? idMatch[1] : String(products.length);
-              if (seen.has(pid)) continue;
-              seen.add(pid);
-              products.push({
-                id: pid,
-                title: item.name,
-                price: item.offers?.price ? `$${item.offers.price}` : "Price unavailable",
-                imageUrl: item.image || "",
-                productUrl: item.url,
-                shop: item.brand?.name,
-              });
-            }
-          }
-        }
-      } catch {}
-    }
   }
 
   return products;
 }
 
-async function fetchWithScrapingBee(url: string): Promise<string> {
-  if (!SCRAPINGBEE_API_KEY) {
-    throw new Error("SCRAPINGBEE_API_KEY is not configured");
+export async function scrapeEtsy(keyword: string, maxResults: number = 12): Promise<EtsyProduct[]> {
+  const encodedKeyword = encodeURIComponent(keyword);
+  const url = `https://www.etsy.com/search?q=${encodedKeyword}&ref=search_bar`;
+
+  try {
+    const extractRules = {
+      products: {
+        description: "List of all product listings visible on this Etsy search results page",
+        type: "list",
+        output: {
+          title: "The full product title/name",
+          price: "The product price including currency symbol",
+          image_url: "The main product image URL (full https URL)",
+          product_url: "The full URL link to the product listing page",
+          shop_name: "The name of the shop selling this product",
+          listing_id: "The Etsy listing ID number from the URL or data attributes",
+        },
+      },
+    };
+
+    const data = await fetchWithScrapingBeeAI(
+      url,
+      "Extract all product listings from this Etsy search results page. For each product, get the title, price, image URL, product link, shop name, and listing ID.",
+      extractRules
+    );
+
+    log(`AI extraction returned: ${JSON.stringify(data).substring(0, 500)}`, "etsy");
+
+    const productList = data?.products || [];
+    const products: EtsyProduct[] = [];
+    const seen = new Set<string>();
+
+    for (const item of productList) {
+      if (!item.title || item.title.length < 3) continue;
+
+      let id = String(item.listing_id || "");
+      if (!id) {
+        const idMatch = (item.product_url || "").match(/listing\/(\d+)/);
+        id = idMatch ? idMatch[1] : `etsy-${products.length}`;
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+
+      let imageUrl = item.image_url || "";
+      if (imageUrl.startsWith("//")) imageUrl = `https:${imageUrl}`;
+
+      let productUrl = item.product_url || "";
+      if (productUrl && !productUrl.startsWith("http")) {
+        productUrl = `https://www.etsy.com${productUrl.startsWith("/") ? "" : "/"}${productUrl}`;
+      }
+      if (!productUrl) productUrl = `https://www.etsy.com/listing/${id}`;
+
+      products.push({
+        id,
+        title: item.title,
+        price: item.price || "Price unavailable",
+        imageUrl,
+        productUrl,
+        shop: item.shop_name,
+      });
+
+      if (products.length >= maxResults) break;
+    }
+
+    if (products.length > 0) {
+      log(`AI extraction found ${products.length} Etsy products`, "etsy");
+      return products;
+    }
+
+    log("AI extraction returned no products, trying fallback", "etsy");
+  } catch (error: any) {
+    log(`AI extraction failed: ${error.message}, trying fallback`, "etsy");
   }
 
-  const params = new URLSearchParams({
-    api_key: SCRAPINGBEE_API_KEY,
-    url,
-    render_js: "true",
-    premium_proxy: "true",
-    country_code: "us",
-  });
+  const html = await fetchWithScrapingBeeRaw(url);
+  const fallbackProducts = extractEtsyProductsFallback(html);
+  log(`Fallback extraction found ${fallbackProducts.length} products`, "etsy");
+  return fallbackProducts.slice(0, maxResults);
+}
 
-  const apiUrl = `https://app.scrapingbee.com/api/v1?${params.toString()}`;
-  log(`ScrapingBee request: ${url}`, "etsy");
+export async function analyzeEtsyProductForAliexpress(etsyProduct: EtsyProduct): Promise<string> {
+  const pageUrl = etsyProduct.productUrl;
 
-  const response = await fetch(apiUrl, {
-    method: "GET",
-    signal: AbortSignal.timeout(90000),
-  });
+  try {
+    const extractRules = {
+      product_analysis: {
+        description: "Analysis of this product to find it on AliExpress/wholesale suppliers",
+        type: "object",
+        output: {
+          product_type: "The generic product type/category (e.g. 'wireless earbuds', 'phone case', 'led strip lights')",
+          material: "The main material of the product if visible",
+          key_features: "The most distinctive visual features that would help identify this exact product on AliExpress (colors, shape, patterns, style)",
+          search_terms: "The best 3-5 word search query to find this exact product on AliExpress in English",
+        },
+      },
+    };
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`ScrapingBee returned ${response.status}: ${text.substring(0, 200)}`);
+    const data = await fetchWithScrapingBeeAI(
+      pageUrl,
+      `Analyze this Etsy product listing. Look at the product images and title carefully. Determine what generic type of product this is (ignoring branding/personalization). Generate the best search terms to find this same product on AliExpress or from Chinese wholesale suppliers. The product title is: "${etsyProduct.title}"`,
+      extractRules
+    );
+
+    log(`Product analysis for "${etsyProduct.title.substring(0, 40)}": ${JSON.stringify(data?.product_analysis)}`, "etsy");
+
+    const analysis = data?.product_analysis;
+    if (analysis?.search_terms) {
+      return analysis.search_terms;
+    }
+    if (analysis?.product_type) {
+      return analysis.product_type;
+    }
+  } catch (error: any) {
+    log(`Product analysis failed for "${etsyProduct.title.substring(0, 40)}": ${error.message}`, "etsy");
   }
 
-  const html = await response.text();
-  log(`ScrapingBee returned ${html.length} bytes`, "etsy");
-  return html;
+  return extractSearchKeywords(etsyProduct.title);
 }
 
 export function extractSearchKeywords(title: string): string {
@@ -192,23 +269,5 @@ export function extractSearchKeywords(title: string): string {
     .split(/\s+/)
     .filter(w => w.length > 2 && !stopWords.has(w));
 
-  const keywords = words.slice(0, 5).join(" ");
-  return keywords || title.substring(0, 40);
-}
-
-export async function scrapeEtsy(keyword: string, maxResults: number = 12): Promise<EtsyProduct[]> {
-  const encodedKeyword = encodeURIComponent(keyword);
-  const url = `https://www.etsy.com/search?q=${encodedKeyword}&ref=search_bar`;
-
-  const html = await fetchWithScrapingBee(url);
-  let products = extractEtsyProducts(html);
-
-  if (products.length === 0) {
-    const hasCaptcha = html.includes("captcha") || html.includes("robot");
-    const hasBlocked = html.includes("blocked") || html.includes("Access Denied");
-    log(`No Etsy products found (captcha=${hasCaptcha}, blocked=${hasBlocked})`, "etsy");
-    log(`HTML snippet: ${html.substring(0, 1000)}`, "etsy");
-  }
-
-  return products.slice(0, maxResults);
+  return words.slice(0, 5).join(" ") || title.substring(0, 40);
 }

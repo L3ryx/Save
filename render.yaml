@@ -10,5 +10,7 @@ services:
         value: production
       - key: SCRAPERAPI_KEY
         sync: false
+      - key: SCRAPINGBEE_API_KEY
+        sync: false
       - key: SESSION_SECRET
         generateValue: true

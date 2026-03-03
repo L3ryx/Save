@@ -168,11 +168,11 @@ function extractProductsFromHtml(html: string): Product[] {
     const prices: string[] = [];
     const images: string[] = [];
 
-    let m;
+    let m: RegExpExecArray | null;
     while ((m = linkRegex.exec(html)) !== null) {
       const url = m[1].startsWith("//") ? `https:${m[1]}` : m[1];
-      if (!links.find(l => l.id === m[2])) {
-        links.push({ url, id: m[2] });
+      if (!links.find(l => l.id === m![2])) {
+        links.push({ url, id: m![2] });
       }
     }
 
