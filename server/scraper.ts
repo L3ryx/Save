@@ -207,7 +207,7 @@ function extractProductsFromHtml(html: string): Product[] {
   return products.filter(p => p.title && p.title.length > 3);
 }
 
-async function fetchWithScraperApi(url: string, useRender: boolean, timeoutMs: number): Promise<string> {
+async function fetchWithScraperApi(url: string, useRender: boolean, timeoutMs: number, maxRetries: number = 2): Promise<string> {
   const params = new URLSearchParams({
     api_key: SCRAPERAPI_KEY!,
     url,
@@ -218,25 +218,48 @@ async function fetchWithScraperApi(url: string, useRender: boolean, timeoutMs: n
   }
 
   const scraperUrl = `https://api.scraperapi.com?${params.toString()}`;
-  const startTime = Date.now();
 
-  const response = await fetch(scraperUrl, {
-    method: "GET",
-    headers: {
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.5",
-    },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      const delay = attempt * 5000;
+      log(`Retry ${attempt}/${maxRetries} after ${delay}ms...`, "scraper");
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
 
-  const elapsed = Date.now() - startTime;
-  log(`ScraperAPI responded in ${elapsed}ms (render=${useRender})`, "scraper");
+    const startTime = Date.now();
 
-  if (!response.ok) {
-    throw new Error(`ScraperAPI returned ${response.status}: ${response.statusText}`);
+    try {
+      const response = await fetch(scraperUrl, {
+        method: "GET",
+        headers: {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5",
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      const elapsed = Date.now() - startTime;
+      log(`ScraperAPI responded in ${elapsed}ms (render=${useRender})`, "scraper");
+
+      if (!response.ok) {
+        if (response.status >= 500 && attempt < maxRetries) {
+          log(`ScraperAPI returned ${response.status}, will retry...`, "scraper");
+          continue;
+        }
+        throw new Error(`ScraperAPI returned ${response.status}: ${response.statusText}`);
+      }
+
+      return await response.text();
+    } catch (error: any) {
+      if (attempt < maxRetries && (error.name === "TimeoutError" || error.message?.includes("500"))) {
+        log(`Request failed (${error.message}), will retry...`, "scraper");
+        continue;
+      }
+      throw error;
+    }
   }
 
-  return await response.text();
+  throw new Error("ScraperAPI: all retries exhausted");
 }
 
 export function parseSalesCount(orders: string | undefined): number {
