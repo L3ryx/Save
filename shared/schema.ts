@@ -55,3 +55,40 @@ export const scrapeResponseSchema = z.object({
 });
 
 export type ScrapeResponse = z.infer<typeof scrapeResponseSchema>;
+
+export const etsyProductSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  price: z.string(),
+  imageUrl: z.string(),
+  productUrl: z.string(),
+  shop: z.string().optional(),
+  rating: z.string().optional(),
+  reviews: z.string().optional(),
+});
+
+export type EtsyProduct = z.infer<typeof etsyProductSchema>;
+
+export const matchedProductSchema = z.object({
+  etsyProduct: etsyProductSchema,
+  aliexpressMatches: z.array(productSchema),
+  searchKeywords: z.string(),
+});
+
+export type MatchedProduct = z.infer<typeof matchedProductSchema>;
+
+export const etsySearchRequestSchema = z.object({
+  keyword: z.string().min(1).max(200),
+  maxResults: z.number().min(1).max(48).default(12),
+});
+
+export type EtsySearchRequest = z.infer<typeof etsySearchRequestSchema>;
+
+export const etsySearchResponseSchema = z.object({
+  matches: z.array(matchedProductSchema),
+  keyword: z.string(),
+  totalEtsyProducts: z.number(),
+  scrapedAt: z.string(),
+});
+
+export type EtsySearchResponse = z.infer<typeof etsySearchResponseSchema>;

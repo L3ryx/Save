@@ -376,3 +376,30 @@ export async function scrapeMultiplePages(
     scrapedAt: new Date().toISOString(),
   };
 }
+
+export async function searchAliexpressByKeyword(
+  keyword: string,
+  maxResults: number = 10
+): Promise<Product[]> {
+  if (!SCRAPERAPI_KEY) {
+    throw new Error("SCRAPERAPI_KEY is not configured");
+  }
+
+  const encodedKeyword = encodeURIComponent(keyword.trim());
+  const targetUrl = `https://www.aliexpress.com/w/wholesale-${encodedKeyword.replace(/%20/g, "-")}.html?SearchText=${encodedKeyword}&SortType=total_tranpro_desc&page=1&g=y`;
+
+  log(`AliExpress keyword search: ${keyword}`, "scraper");
+
+  try {
+    const html = await fetchWithScraperApi(targetUrl, true, 60000, 1);
+    log(`Keyword search received ${html.length} bytes`, "scraper");
+
+    const products = extractProductsFromHtml(html);
+    log(`Keyword search found ${products.length} products for "${keyword}"`, "scraper");
+
+    return products.slice(0, maxResults);
+  } catch (error: any) {
+    log(`Keyword search failed for "${keyword}": ${error.message}`, "scraper");
+    return [];
+  }
+}
