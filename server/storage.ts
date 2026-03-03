@@ -7,7 +7,7 @@ export interface IStorage {
 
 export class MemStorage implements IStorage {
   private cache: Map<string, { data: ScrapeResponse; timestamp: number }>;
-  private cacheTTL = 10 * 60 * 1000;
+  private cacheTTL = 30 * 60 * 1000;
 
   constructor() {
     this.cache = new Map();
