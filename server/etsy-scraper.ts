@@ -240,3 +240,22 @@ process.on("unhandledRejection", err => {
 process.on("uncaughtException", err => {
   console.error("UncaughtException:", err);
 });
+export function extractSearchKeywords(title: string): string {
+  const stopWords = new Set([
+    "the","a","an","and","or","but","in","on","at","to","for",
+    "of","with","by","from","is","it","this","that","are","was",
+    "be","has","had","have","do","does","did","will","would",
+    "can","could","may","might","shall","should","not","no",
+    "very","just","so","up","out","if","about","into","through",
+    "during","before","after","above","below","between","each",
+    "few","more","most","other","some","such","only","own",
+    "same","than","too","also","how","all","any","both"
+  ]);
+const words = title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !stopWords.has(w));
+
+  return words.slice(0, 5).join(" ") || title.slice(0, 40);
+}
