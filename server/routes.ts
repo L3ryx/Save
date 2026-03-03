@@ -96,30 +96,61 @@ export async function registerRoutes(
         });
       }
 
-      const limitedProducts = etsyProducts.slice(0, 6);
-      const matches: MatchedProduct[] = [];
+      const limitedProducts = etsyProducts.slice(0, 8);
 
-      for (const etsyProduct of limitedProducts) {
-        log(`Analyzing Etsy product: "${etsyProduct.title.substring(0, 50)}"`, "routes");
+      log(`Analyzing ${limitedProducts.length} products in parallel`, "routes");
+      const analysisResults = await Promise.all(
+        limitedProducts.map(async (etsyProduct) => {
+          let searchTerms: string;
+          try {
+            searchTerms = await analyzeEtsyProductForAliexpress(etsyProduct);
+          } catch {
+            searchTerms = extractSearchKeywords(etsyProduct.title);
+          }
+          log(`AI terms for "${etsyProduct.title.substring(0, 30)}": "${searchTerms}"`, "routes");
+          return { etsyProduct, searchTerms };
+        })
+      );
 
-        let searchTerms: string;
-        try {
-          searchTerms = await analyzeEtsyProductForAliexpress(etsyProduct);
-        } catch {
-          searchTerms = extractSearchKeywords(etsyProduct.title);
-        }
+      const uniqueSearchTerms = Array.from(new Set(analysisResults.map(r => r.searchTerms)));
+      log(`${uniqueSearchTerms.length} unique search terms, fetching AliExpress in parallel`, "routes");
 
-        log(`AI search terms: "${searchTerms}"`, "routes");
+      const aliResultsMap = new Map<string, import("@shared/schema").Product[]>();
+      await Promise.all(
+        uniqueSearchTerms.map(async (terms) => {
+          const aliProducts = await searchAliexpressByKeyword(terms, 20);
+          aliResultsMap.set(terms, aliProducts);
+          log(`AliExpress: ${aliProducts.length} products for "${terms}"`, "routes");
+        })
+      );
 
-        const aliProducts = await searchAliexpressByKeyword(searchTerms, 10);
-        log(`Found ${aliProducts.length} AliExpress matches for "${searchTerms}"`, "routes");
+      const matches: MatchedProduct[] = analysisResults.map(({ etsyProduct, searchTerms }) => {
+        const aliProducts = aliResultsMap.get(searchTerms) || [];
 
-        matches.push({
-          etsyProduct,
-          aliexpressMatches: aliProducts.slice(0, 5),
-          searchKeywords: searchTerms,
+        const etsyWords = etsyProduct.title
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .split(/\s+/)
+          .filter(w => w.length > 2);
+
+        const scored = aliProducts.map(ali => {
+          const aliWords = ali.title
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, " ")
+            .split(/\s+/)
+            .filter(w => w.length > 2);
+          let matchCount = 0;
+          for (const word of etsyWords) {
+            if (aliWords.some(aw => aw.includes(word) || word.includes(aw))) matchCount++;
+          }
+          return { product: ali, score: etsyWords.length > 0 ? matchCount / etsyWords.length : 0 };
         });
-      }
+
+        scored.sort((a, b) => b.score - a.score);
+        const topMatches = scored.slice(0, 5).map(s => s.product);
+
+        return { etsyProduct, aliexpressMatches: topMatches, searchKeywords: searchTerms };
+      });
 
       return res.json({
         matches,
