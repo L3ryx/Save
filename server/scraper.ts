@@ -48,7 +48,7 @@ function extractProductsFromHtml(html: string): Product[] {
   const products: Product[] = [];
   const seen = new Set<string>();
 
-  const productBlockRegex = /"productId"\s*:\s*"(\d+)"([\s\S]*?)(?="productId"\s*:\s*"|\]\s*[,}]|$)/g;
+  const productBlockRegex = /"productId"\s*:\s*"(\d+)"([\s\S]*?)(?="productId"\s*:\s*"|"redirectedId"\s*:\s*"|$)/g;
   let blockMatch;
 
   while ((blockMatch = productBlockRegex.exec(html)) !== null) {
