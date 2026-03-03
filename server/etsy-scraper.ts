@@ -7,21 +7,20 @@ if (!SCRAPINGBEE_API_KEY) {
 }
 
 /* =====================================================
-   🔁 Cache mémoire (10 minutes)
+   🔁 CACHE (10 minutes)
 ===================================================== */
 const cache = new Map<string, { data: EtsyProduct[]; ts: number }>();
 const CACHE_DURATION = 10 * 60 * 1000;
 
 /* =====================================================
-   🚀 ScrapingBee Core Request (Retry + Backoff)
+   🚀 ScrapingBee Request (Retry + Backoff)
 ===================================================== */
 async function scrapingBeeRequest(
   params: URLSearchParams,
   retries = 3,
   timeoutMs = 60000
 ): Promise<Response> {
-  const baseUrl = "https://app.scrapingbee.com/api/v1";
-  const apiUrl = `${baseUrl}?${params.toString()}`;
+  const apiUrl = `https://app.scrapingbee.com/api/v1?${params.toString()}`;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -39,17 +38,18 @@ async function scrapingBeeRequest(
 
       if (response.status >= 500 || response.status === 429) {
         const delay = Math.min(2000 * attempt * attempt, 10000);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
 
       const text = await response.text();
-      throw new Error(`ScrapingBee ${response.status}: ${text.slice(0, 200)}`);
-
+      throw new Error(
+        `ScrapingBee ${response.status}: ${text.slice(0, 200)}`
+      );
     } catch (err) {
       if (attempt === retries) throw err;
       const delay = Math.min(2000 * attempt * attempt, 10000);
-      await new Promise(r => setTimeout(r, delay));
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 
@@ -57,7 +57,7 @@ async function scrapingBeeRequest(
 }
 
 /* =====================================================
-   🧠 Fallback HTML Parser (rapide & économique)
+   🧠 Fallback HTML Parser (Économie crédits)
 ===================================================== */
 function extractEtsyProductsFallback(html: string): EtsyProduct[] {
   const products: EtsyProduct[] = [];
@@ -85,6 +85,7 @@ function extractEtsyProductsFallback(html: string): EtsyProduct[] {
         .replace(/-/g, " ")
         .replace(/\s+/g, " ")
         .trim();
+
       if (clean.length > 3) titles.set(m[1], clean);
     }
   }
@@ -124,6 +125,9 @@ export async function scrapeEtsy(
   maxResults = 24
 ): Promise<EtsyProduct[]> {
 
+  /* =============================
+     🔥 Cache
+  ============================= */
   const cached = cache.get(keyword);
   if (cached && Date.now() - cached.ts < CACHE_DURATION) {
     log("Using cached results", "etsy");
@@ -133,12 +137,12 @@ export async function scrapeEtsy(
   const encodedKeyword = encodeURIComponent(keyword);
   const url = `https://www.etsy.com/search?q=${encodedKeyword}`;
 
-  /* =============================
-     1️⃣ RAW SANS JS (économique)
-  ============================= */
+  /* =====================================================
+     1️⃣ RAW SCRAPE (Sans JS – moins cher)
+  ====================================================== */
   try {
     const rawParams = new URLSearchParams({
-      api_key: SCRAPINGBEE_API_KEY,
+      api_key: SCRAPINGBEE_API_KEY!,
       url,
       render_js: "false",
       premium_proxy: "true",
@@ -147,6 +151,7 @@ export async function scrapeEtsy(
 
     const rawResponse = await scrapingBeeRequest(rawParams);
     const html = await rawResponse.text();
+
     const products = extractEtsyProductsFallback(html);
 
     if (products.length >= 8) {
@@ -154,17 +159,16 @@ export async function scrapeEtsy(
       log(`Raw scrape success (${products.length})`, "etsy");
       return products.slice(0, maxResults);
     }
-
   } catch (err) {
     log("Raw scrape failed → switching to AI", "etsy");
   }
 
-  /* =============================
-     2️⃣ AI EXTRACTION
-  ============================= */
+  /* =====================================================
+     2️⃣ AI SCRAPE (Si RAW pas suffisant)
+  ====================================================== */
   try {
     const aiParams = new URLSearchParams({
-      api_key: SCRAPINGBEE_API_KEY,
+      api_key: SCRAPINGBEE_API_KEY!,
       url,
       render_js: "true",
       premium_proxy: "true",
@@ -188,9 +192,9 @@ export async function scrapeEtsy(
 
     const aiResponse = await scrapingBeeRequest(aiParams, 2, 70000);
     const data = await aiResponse.json();
-    const list = data?.products || [];
+    const list = data?.products;
 
-    if (!Array.isArray(list)) throw new Error("Invalid AI structure");
+    if (!Array.isArray(list)) throw new Error("Invalid AI response");
 
     const seen = new Set<string>();
     const products: EtsyProduct[] = [];
@@ -205,11 +209,11 @@ export async function scrapeEtsy(
 
       products.push({
         id,
-        title: item.title,
+        title: item.title || "No title",
         price: item.price || "N/A",
         imageUrl: item.image_url?.startsWith("//")
           ? `https:${item.image_url}`
-          : item.image_url,
+          : item.image_url || "",
         productUrl: item.product_url?.startsWith("http")
           ? item.product_url
           : `https://www.etsy.com/listing/${id}`,
@@ -223,7 +227,6 @@ export async function scrapeEtsy(
     log(`AI scrape success (${products.length})`, "etsy");
 
     return products;
-
   } catch (err) {
     log("AI scrape failed completely", "etsy");
     return [];
@@ -231,15 +234,9 @@ export async function scrapeEtsy(
 }
 
 /* =====================================================
-   🔐 Protection serveur (anti crash production)
+   🔑 Utilities
 ===================================================== */
-process.on("unhandledRejection", err => {
-  console.error("UnhandledRejection:", err);
-});
 
-process.on("uncaughtException", err => {
-  console.error("UncaughtException:", err);
-});
 export function extractSearchKeywords(title: string): string {
   const stopWords = new Set([
     "the","a","an","and","or","but","in","on","at","to","for",
@@ -251,7 +248,8 @@ export function extractSearchKeywords(title: string): string {
     "few","more","most","other","some","such","only","own",
     "same","than","too","also","how","all","any","both"
   ]);
-const words = title
+
+  const words = title
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
@@ -259,3 +257,14 @@ const words = title
 
   return words.slice(0, 5).join(" ") || title.slice(0, 40);
 }
+
+/* =====================================================
+   🔥 Protection Production
+===================================================== */
+process.on("unhandledRejection", (err) => {
+  console.error("UnhandledRejection:", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("UncaughtException:", err);
+});
