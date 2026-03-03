@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { type EtsySearchResponse, type MatchedProduct, type Product } from "@shared/schema";
@@ -7,10 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import {
   Search, TrendingUp, Package, ExternalLink, Loader2,
-  AlertCircle, ShoppingCart, Store,
+  AlertCircle, ShoppingCart, Store, Zap,
   ChevronDown, ChevronUp
 } from "lucide-react";
 import { Link } from "wouter";
@@ -210,9 +211,34 @@ function MatchSkeleton() {
   );
 }
 
+interface AutoDiscoverState {
+  isRunning: boolean;
+  statusMessage: string;
+  currentKeyword: string;
+  keywordIndex: number;
+  totalKeywords: number;
+  matches: MatchedProduct[];
+  keywords: string[];
+  isComplete: boolean;
+  error: string | null;
+}
+
 export default function EtsyPage() {
   const [keyword, setKeyword] = useState("");
   const [searchResult, setSearchResult] = useState<EtsySearchResponse | null>(null);
+  const [mode, setMode] = useState<"search" | "discover">("search");
+  const [autoDiscover, setAutoDiscover] = useState<AutoDiscoverState>({
+    isRunning: false,
+    statusMessage: "",
+    currentKeyword: "",
+    keywordIndex: 0,
+    totalKeywords: 0,
+    matches: [],
+    keywords: [],
+    isComplete: false,
+    error: null,
+  });
+  const abortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
   const searchMutation = useMutation({
@@ -229,7 +255,6 @@ export default function EtsyPage() {
           variant: "destructive",
         });
       } else {
-        const totalMatches = data.matches.reduce((sum, m) => sum + m.aliexpressMatches.length, 0);
         toast({
           title: `${data.matches.length} Etsy products found`,
           description: `Matched against ${data.totalAliProducts || 0} AliExpress products`,
@@ -237,20 +262,163 @@ export default function EtsyPage() {
       }
     },
     onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  const startAutoDiscover = useCallback(async () => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setAutoDiscover({
+      isRunning: true,
+      statusMessage: "Starting auto-discover...",
+      currentKeyword: "",
+      keywordIndex: 0,
+      totalKeywords: 0,
+      matches: [],
+      keywords: [],
+      isComplete: false,
+      error: null,
+    });
+
+    try {
+      const response = await fetch("/api/etsy/auto-discover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let errorMsg = "Auto-discover request failed";
+        try {
+          const errData = await response.json();
+          errorMsg = errData.message || errorMsg;
+        } catch {}
+        throw new Error(errorMsg);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No response stream");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+
+            switch (event.type) {
+              case "status":
+                setAutoDiscover(prev => ({
+                  ...prev,
+                  statusMessage: event.message,
+                  currentKeyword: event.currentKeyword || prev.currentKeyword,
+                  keywordIndex: event.keywordIndex ?? prev.keywordIndex,
+                }));
+                break;
+
+              case "keywords":
+                setAutoDiscover(prev => ({
+                  ...prev,
+                  keywords: event.keywords,
+                  totalKeywords: event.total,
+                }));
+                break;
+
+              case "match":
+                setAutoDiscover(prev => ({
+                  ...prev,
+                  matches: [...prev.matches, event.match],
+                }));
+                break;
+
+              case "keyword_done":
+                setAutoDiscover(prev => ({
+                  ...prev,
+                  statusMessage: event.found > 0
+                    ? `Found ${event.found} match(es) for "${event.keyword}"`
+                    : `No good matches for "${event.keyword}"`,
+                }));
+                break;
+
+              case "keyword_error":
+                break;
+
+              case "complete":
+                setAutoDiscover(prev => ({
+                  ...prev,
+                  isRunning: false,
+                  isComplete: true,
+                  statusMessage: `Done! Found ${event.totalFound} matching products.`,
+                }));
+                break;
+
+              case "error":
+                setAutoDiscover(prev => ({
+                  ...prev,
+                  isRunning: false,
+                  error: event.message,
+                  statusMessage: `Error: ${event.message}`,
+                }));
+                break;
+            }
+          } catch {}
+        }
+      }
+    } catch (error: any) {
+      if (error.name === "AbortError") {
+        setAutoDiscover(prev => ({
+          ...prev,
+          isRunning: false,
+          statusMessage: "Stopped by user",
+        }));
+      } else {
+        setAutoDiscover(prev => ({
+          ...prev,
+          isRunning: false,
+          error: error.message,
+          statusMessage: `Error: ${error.message}`,
+        }));
+      }
+    }
+  }, []);
+
+  const stopAutoDiscover = useCallback(() => {
+    abortRef.current?.abort();
+    setAutoDiscover(prev => ({
+      ...prev,
+      isRunning: false,
+      statusMessage: "Stopped",
+    }));
+  }, []);
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!keyword.trim()) return;
     setSearchResult(null);
+    setMode("search");
     searchMutation.mutate({ keyword: keyword.trim(), maxResults: 12 });
   }
+
+  function handleAutoDiscover() {
+    setMode("discover");
+    setSearchResult(null);
+    startAutoDiscover();
+  }
+
+  const discoverProgress = autoDiscover.totalKeywords > 0
+    ? Math.min(100, (autoDiscover.matches.length / 10) * 100)
+    : 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -263,7 +431,7 @@ export default function EtsyPage() {
               </div>
               <div>
                 <h1 className="text-xl font-bold tracking-tight">Etsy → AliExpress Finder</h1>
-                <p className="text-xs text-muted-foreground">Find AliExpress sources for Etsy products via AI</p>
+                <p className="text-xs text-muted-foreground">Find AliExpress sources for Etsy products</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -279,23 +447,23 @@ export default function EtsyPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        <section>
+        <section className="space-y-4">
           <form onSubmit={handleSearch} className="flex gap-3 max-w-2xl mx-auto">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 type="text"
-                placeholder="Search Etsy products (e.g. 'minimalist gold necklace', 'phone case aesthetic')"
+                placeholder="Search Etsy products (e.g. 'minimalist gold necklace')"
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
                 className="pl-10"
                 data-testid="input-etsy-search"
-                disabled={searchMutation.isPending}
+                disabled={searchMutation.isPending || autoDiscover.isRunning}
               />
             </div>
             <Button
               type="submit"
-              disabled={searchMutation.isPending || !keyword.trim()}
+              disabled={searchMutation.isPending || autoDiscover.isRunning || !keyword.trim()}
               className="gap-2"
               data-testid="button-etsy-search"
             >
@@ -307,9 +475,130 @@ export default function EtsyPage() {
               Search
             </Button>
           </form>
+
+          <div className="flex justify-center">
+            <Button
+              variant="default"
+              size="lg"
+              className="gap-2 bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
+              onClick={handleAutoDiscover}
+              disabled={searchMutation.isPending || autoDiscover.isRunning}
+              data-testid="button-auto-discover"
+            >
+              {autoDiscover.isRunning ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <Zap className="w-5 h-5" />
+              )}
+              Auto-Discover: Find 10 Products Sold on Both
+            </Button>
+          </div>
         </section>
 
-        {searchMutation.isPending && (
+        {autoDiscover.isRunning && (
+          <section className="space-y-4" data-testid="section-auto-discover">
+            <Card className="p-6">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="w-5 h-5 animate-spin text-orange-500" />
+                    <div>
+                      <p className="text-sm font-medium" data-testid="text-discover-status">
+                        {autoDiscover.statusMessage}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {autoDiscover.matches.length}/10 products found
+                        {autoDiscover.totalKeywords > 0 &&
+                          ` | Keyword ${autoDiscover.keywordIndex + 1}/${autoDiscover.totalKeywords}`}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={stopAutoDiscover}
+                    data-testid="button-stop-discover"
+                  >
+                    Stop
+                  </Button>
+                </div>
+                <Progress value={discoverProgress} className="h-2" />
+                {autoDiscover.keywords.length > 0 && (
+                  <div className="flex gap-1.5 flex-wrap">
+                    {autoDiscover.keywords.slice(0, 15).map((kw, i) => (
+                      <Badge
+                        key={kw}
+                        variant={i === autoDiscover.keywordIndex ? "default" : i < autoDiscover.keywordIndex ? "secondary" : "outline"}
+                        className={`text-xs ${i === autoDiscover.keywordIndex ? "animate-pulse" : ""}`}
+                      >
+                        {kw}
+                      </Badge>
+                    ))}
+                    {autoDiscover.keywords.length > 15 && (
+                      <Badge variant="outline" className="text-xs">
+                        +{autoDiscover.keywords.length - 15} more
+                      </Badge>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Card>
+
+            {autoDiscover.matches.map((match) => (
+              <MatchCard key={match.etsyProduct.id} match={match} />
+            ))}
+
+            {autoDiscover.matches.length === 0 && (
+              <div className="space-y-4">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <MatchSkeleton key={i} />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {!autoDiscover.isRunning && mode === "discover" && autoDiscover.matches.length > 0 && (
+          <section className="space-y-4" data-testid="section-discover-results">
+            <Card className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900 flex items-center justify-center">
+                    <TrendingUp className="w-4 h-4 text-green-600 dark:text-green-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold" data-testid="text-discover-summary">
+                      {autoDiscover.isComplete
+                        ? `Found ${autoDiscover.matches.length} products sold on both Etsy & AliExpress`
+                        : autoDiscover.statusMessage}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Products with 25%+ match score, sorted by best match
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAutoDiscover}
+                  className="gap-2"
+                  data-testid="button-discover-again"
+                >
+                  <Zap className="w-4 h-4" />
+                  Run again
+                </Button>
+              </div>
+            </Card>
+
+            {autoDiscover.matches
+              .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0))
+              .map((match) => (
+                <MatchCard key={match.etsyProduct.id} match={match} />
+              ))}
+          </section>
+        )}
+
+        {searchMutation.isPending && mode === "search" && (
           <section className="space-y-4">
             <div className="flex items-center gap-3 justify-center">
               <Loader2 className="w-5 h-5 animate-spin text-primary" />
@@ -323,7 +612,7 @@ export default function EtsyPage() {
           </section>
         )}
 
-        {!searchMutation.isPending && searchMutation.isError && (
+        {!searchMutation.isPending && searchMutation.isError && mode === "search" && (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <div className="w-20 h-20 rounded-full bg-destructive/10 flex items-center justify-center">
               <AlertCircle className="w-8 h-8 text-destructive" />
@@ -342,14 +631,16 @@ export default function EtsyPage() {
           </div>
         )}
 
-        {!searchMutation.isPending && !searchMutation.isError && !searchResult && (
-          <div className="flex flex-col items-center justify-center py-20 gap-4">
+        {!searchMutation.isPending && !autoDiscover.isRunning && !searchMutation.isError
+          && !searchResult && mode === "search" && autoDiscover.matches.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-16 gap-4">
             <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center">
               <Search className="w-8 h-8 text-muted-foreground" />
             </div>
-            <h3 className="text-lg font-semibold">Search Etsy products</h3>
-            <p className="text-sm text-muted-foreground text-center max-w-md">
-              Enter a keyword to search Etsy and AliExpress simultaneously. Products are matched by title keywords and price ratio analysis.
+            <h3 className="text-lg font-semibold">Find Etsy products on AliExpress</h3>
+            <p className="text-sm text-muted-foreground text-center max-w-lg">
+              Search by keyword or use <strong>Auto-Discover</strong> to automatically scrape trending Etsy keywords
+              and find 10 products that are also sold on AliExpress.
             </p>
             <div className="flex gap-2 flex-wrap justify-center mt-2">
               {["minimalist necklace", "phone case aesthetic", "led strip lights", "tote bag canvas"].map(term => (
@@ -357,7 +648,7 @@ export default function EtsyPage() {
                   key={term}
                   variant="outline"
                   size="sm"
-                  onClick={() => { setKeyword(term); searchMutation.mutate({ keyword: term, maxResults: 12 }); }}
+                  onClick={() => { setKeyword(term); setMode("search"); searchMutation.mutate({ keyword: term, maxResults: 12 }); }}
                   data-testid={`suggestion-${term.replace(/\s/g, "-")}`}
                 >
                   {term}
@@ -367,7 +658,7 @@ export default function EtsyPage() {
           </div>
         )}
 
-        {!searchMutation.isPending && searchResult && searchResult.matches.length > 0 && (
+        {!searchMutation.isPending && mode === "search" && searchResult && searchResult.matches.length > 0 && (
           <section className="space-y-4" data-testid="section-results">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">
@@ -375,7 +666,7 @@ export default function EtsyPage() {
               </h2>
               <p className="text-sm text-muted-foreground">
                 {searchResult.matches.length} products analyzed
-                {searchResult.scrapedAt && ` • ${new Date(searchResult.scrapedAt).toLocaleTimeString()}`}
+                {searchResult.scrapedAt && ` | ${new Date(searchResult.scrapedAt).toLocaleTimeString()}`}
               </p>
             </div>
 
@@ -385,7 +676,7 @@ export default function EtsyPage() {
           </section>
         )}
 
-        {!searchMutation.isPending && searchResult && searchResult.matches.length === 0 && (
+        {!searchMutation.isPending && mode === "search" && searchResult && searchResult.matches.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center">
               <Package className="w-8 h-8 text-muted-foreground" />
@@ -394,6 +685,19 @@ export default function EtsyPage() {
             <p className="text-sm text-muted-foreground text-center max-w-md">
               No Etsy products were found for this keyword. Try a different search term.
             </p>
+          </div>
+        )}
+
+        {autoDiscover.error && !autoDiscover.isRunning && (
+          <div className="flex flex-col items-center justify-center py-12 gap-4">
+            <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center">
+              <AlertCircle className="w-6 h-6 text-destructive" />
+            </div>
+            <h3 className="text-lg font-semibold">Auto-discover error</h3>
+            <p className="text-sm text-muted-foreground">{autoDiscover.error}</p>
+            <Button onClick={handleAutoDiscover} variant="outline" data-testid="button-retry-discover">
+              Try again
+            </Button>
           </div>
         )}
       </main>

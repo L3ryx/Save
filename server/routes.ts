@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scrapeAliexpress, scrapeMultiplePages, searchAliexpressByKeyword } from "./scraper";
-import { scrapeEtsy, extractSearchKeywords, scoreMatch } from "./etsy-scraper";
+import { scrapeEtsy, extractSearchKeywords, scoreMatch, scrapeEtsyTrendingKeywords } from "./etsy-scraper";
 import { scrapeRequestSchema, etsySearchRequestSchema, aliexpressCategories } from "@shared/schema";
 import type { MatchedProduct } from "@shared/schema";
 import { log } from "./index";
@@ -132,6 +132,143 @@ export async function registerRoutes(
     } catch (error: any) {
       log(`Etsy search error: ${error.message}`, "routes");
       return res.status(500).json({ message: error.message || "Failed to search Etsy" });
+    }
+  });
+
+  app.get("/api/etsy/trending-keywords", async (_req, res) => {
+    try {
+      const keywords = await scrapeEtsyTrendingKeywords();
+      return res.json({ keywords });
+    } catch (error: any) {
+      log(`Trending keywords error: ${error.message}`, "routes");
+      return res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/etsy/auto-discover", async (req, res) => {
+    const minScore = 0.25;
+    const targetMatches = 10;
+    let clientDisconnected = false;
+
+    req.on("close", () => {
+      clientDisconnected = true;
+      log("Auto-discover: client disconnected, stopping", "routes");
+    });
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    function sendEvent(type: string, data: any) {
+      if (!clientDisconnected) {
+        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      }
+    }
+
+    try {
+      sendEvent("status", { message: "Fetching trending keywords from Etsy..." });
+      const keywords = await scrapeEtsyTrendingKeywords();
+      sendEvent("keywords", { keywords, total: keywords.length });
+
+      const goodMatches: MatchedProduct[] = [];
+      const seenEtsyIds = new Set<string>();
+
+      for (let i = 0; i < keywords.length; i++) {
+        if (goodMatches.length >= targetMatches || clientDisconnected) break;
+
+        const keyword = keywords[i];
+        sendEvent("status", {
+          message: `Searching "${keyword}" (${i + 1}/${keywords.length})...`,
+          currentKeyword: keyword,
+          keywordIndex: i,
+          foundSoFar: goodMatches.length,
+        });
+
+        try {
+          const searchTerms = extractSearchKeywords(keyword);
+
+          const [etsyProducts, aliProducts] = await Promise.all([
+            scrapeEtsy(keyword, 12),
+            searchAliexpressByKeyword(searchTerms, 40),
+          ]);
+
+          log(`"${keyword}": ${etsyProducts.length} Etsy, ${aliProducts.length} AliExpress`, "routes");
+
+          if (etsyProducts.length === 0 || aliProducts.length === 0) {
+            sendEvent("keyword_done", {
+              keyword,
+              found: 0,
+              message: `No products found for "${keyword}"`,
+            });
+            continue;
+          }
+
+          let keywordNewMatches = 0;
+
+          for (const etsyProduct of etsyProducts) {
+            if (goodMatches.length >= targetMatches) break;
+            if (seenEtsyIds.has(etsyProduct.id)) continue;
+
+            const scored = aliProducts.map(ali => ({
+              product: ali,
+              score: scoreMatch(etsyProduct.title, etsyProduct.price, ali.title, ali.price),
+            }));
+
+            scored.sort((a, b) => b.score - a.score);
+            const bestScore = scored[0]?.score || 0;
+
+            if (bestScore >= minScore) {
+              const topMatches = scored.slice(0, 5).map(s => s.product);
+              const match: MatchedProduct = {
+                etsyProduct,
+                aliexpressMatches: topMatches,
+                searchKeywords: keyword,
+                matchScore: bestScore,
+              };
+
+              goodMatches.push(match);
+              seenEtsyIds.add(etsyProduct.id);
+              keywordNewMatches++;
+
+              sendEvent("match", {
+                match,
+                totalFound: goodMatches.length,
+                target: targetMatches,
+              });
+            }
+          }
+
+          sendEvent("keyword_done", {
+            keyword,
+            found: keywordNewMatches,
+            totalFound: goodMatches.length,
+          });
+
+        } catch (error: any) {
+          log(`Auto-discover error for "${keyword}": ${error.message}`, "routes");
+          sendEvent("keyword_error", {
+            keyword,
+            error: error.message,
+          });
+        }
+      }
+
+      sendEvent("complete", {
+        matches: goodMatches,
+        totalFound: goodMatches.length,
+        keywordsSearched: Math.min(keywords.length, goodMatches.length >= targetMatches
+          ? keywords.indexOf(goodMatches[goodMatches.length - 1]?.searchKeywords || "") + 1
+          : keywords.length),
+      });
+
+      res.end();
+    } catch (error: any) {
+      log(`Auto-discover fatal error: ${error.message}`, "routes");
+      sendEvent("error", { message: error.message });
+      res.end();
     }
   });
 

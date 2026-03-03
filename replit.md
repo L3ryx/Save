@@ -12,6 +12,7 @@ A web application that scrapes products on AliExpress by category and Etsy by ke
 - Browse 16 AliExpress product categories
 - Scrape best-selling AliExpress products with ScraperAPI
 - **Etsy → AliExpress Finder**: Searches Etsy and AliExpress in parallel (1 call each), then matches products using title keyword overlap + price ratio scoring
+- **Auto-Discover mode**: Scrapes trending Etsy keywords, iterates through each one searching Etsy+AliExpress until 10 good matches (score ≥25%) are found. Uses SSE for real-time progress streaming.
 - Match score displayed per product (green ≥50%, yellow ≥25%, gray below)
 - Results sorted by best match score
 - Sort by: Most Sold, Price (Low/High), Best Rating

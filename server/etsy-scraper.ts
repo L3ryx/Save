@@ -233,6 +233,74 @@ export function extractSearchKeywords(title: string): string {
   return words.slice(0, 5).join(" ") || title.substring(0, 40);
 }
 
+export async function scrapeEtsyTrendingKeywords(): Promise<string[]> {
+  const url = "https://www.etsy.com/";
+
+  try {
+    const extractRules = {
+      trending_searches: {
+        description: "List of trending search terms, popular categories, and suggested searches visible on the Etsy homepage",
+        type: "list",
+        output: {
+          keyword: "The search term, category name, or trending topic text",
+        },
+      },
+    };
+
+    const data = await fetchWithScrapingBeeAI(
+      url,
+      "Extract all trending searches, popular categories, featured search terms, and suggested search keywords visible on the Etsy homepage. Include category names, trending now items, popular searches, and any suggested search queries.",
+      extractRules
+    );
+
+    log(`Trending extraction returned: ${JSON.stringify(data).substring(0, 500)}`, "etsy");
+
+    const items = data?.trending_searches || [];
+    const keywords: string[] = [];
+    const seen = new Set<string>();
+
+    for (const item of items) {
+      const kw = (item.keyword || "").trim().toLowerCase();
+      if (kw.length >= 3 && !seen.has(kw)) {
+        seen.add(kw);
+        keywords.push(kw);
+      }
+    }
+
+    if (keywords.length > 0) {
+      log(`Found ${keywords.length} trending keywords from Etsy`, "etsy");
+      return keywords;
+    }
+  } catch (error: any) {
+    log(`Trending keywords extraction failed: ${error.message}`, "etsy");
+  }
+
+  const fallbackKeywords = [
+    "personalized gifts",
+    "handmade jewelry",
+    "phone case",
+    "tote bag",
+    "wall art",
+    "candles",
+    "earrings",
+    "stickers",
+    "necklace",
+    "home decor",
+    "wedding gifts",
+    "custom portrait",
+    "led lights",
+    "vintage clothing",
+    "crystal jewelry",
+    "plant pot",
+    "laptop sleeve",
+    "resin art",
+    "crochet",
+    "embroidery",
+  ];
+  log(`Using ${fallbackKeywords.length} fallback trending keywords`, "etsy");
+  return fallbackKeywords;
+}
+
 function parsePrice(priceStr: string): number {
   const match = priceStr.replace(/[,\s]/g, "").match(/(\d+\.?\d*)/);
   return match ? parseFloat(match[1]) : 0;
