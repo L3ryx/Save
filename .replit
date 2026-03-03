@@ -39,3 +39,8 @@ outputType = "webview"
 task = "shell.exec"
 args = "npm run dev"
 waitForPort = 5000
+
+[userenv]
+
+[userenv.shared]
+RAPIDAPI_KEY = "ak_ggcd89twlbju5r5jwgczrns0827c9458dcctblmeczyv7iw"
